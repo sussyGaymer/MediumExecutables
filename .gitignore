@@ -1,0 +1,8 @@
+# I didn't copy link.exe to this dir because it needs DLLs, so i just created a batch file to run it from the original dir
+link.bat
+
+# The libraries for linking
+lib/
+
+# The final output files
+out/
