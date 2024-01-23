@@ -17,17 +17,23 @@
     %define STD_INPUT_HANDLE     0xFFFFFFF6
 
 ; Macros
-    %macro GenerateSectionRVA 0
+    %macro GenerateSectionRVA 1-2 1
         %assign SectionCount SectionCount+1
-        dd SectionAlignment*SectionCount
+        %xdefine %1 SectionAlignment*SectionCount*%2
     %endmacro
 
-    %define GetTextRVA(ofs)      (ofs - text + 0x1000)
-    %define GetIdataRVA(ofs)     (ofs - idata + 0x2000)
-    %define GetRdataRVA(ofs)     (ofs - rdata + 0x3000)
+    %define GetTextRVA(ofs)  (ofs - text + TextRVA)
+    %define GetIdataRVA(ofs) (ofs - idata + IdataRVA)
+    %define GetRdataRVA(ofs) (ofs - rdata + RdataRVA)
 
-    %define Import(name) $ + (GetIdataRVA(name)-GetTextRVA($))
-    %define GetText(name) $ + (GetRdataRVA(name)-GetTextRVA($))
+    %define GetText(name)    $ + (GetTextRVA(name)-GetTextRVA($))
+    %define GetIdata(name)   $ + (GetIdataRVA(name)-GetTextRVA($))
+    %define GetRdata(name)   $ + (GetRdataRVA(name)-GetTextRVA($))
+
+; Section RVAs
+    GenerateSectionRVA TextRVA
+    GenerateSectionRVA IdataRVA
+    GenerateSectionRVA RdataRVA
 
 dos: ; DOS header
     dw 0x5a4d     ; "MZ"
@@ -135,7 +141,7 @@ sections: ; Section header
     textsection: ; .text section
         dq ".text"     ; Name
         dd text.uend-text ; Virtual size
-        GenerateSectionRVA ; Virtual address
+        dd TextRVA     ; Virtual address
         dd text.end-text ; Size of raw data
         dd text        ; Pointer to raw data
         dd 0x00000000  ; Pointer to relocations
@@ -147,7 +153,7 @@ sections: ; Section header
     idatasection:
         dq ".idata"    ; Name
         dd idata.uend-idata ; Virtual size
-        GenerateSectionRVA ; Virtual address
+        dd IdataRVA    ; Virtual address
         dd idata.end-idata ; Size of raw data
         dd idata       ; Pointer to raw data
         dd 0x00000000  ; Pointer to relocations
@@ -159,7 +165,7 @@ sections: ; Section header
     rdatasection:
         dq ".rdata"    ; Name
         dd rdata.uend-rdata ; Virtual size
-        GenerateSectionRVA ; Virtual address
+        dd RdataRVA    ; Virtual address
         dd rdata.end-rdata ; Size of raw data
         dd rdata       ; Pointer to raw data
         dd 0x00000000  ; Pointer to relocations
@@ -169,21 +175,23 @@ sections: ; Section header
         dd 0x40000040  ; Characteristics (IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ)
 head.end: ; End of all headers
 
+ALIGN FileAlignment, db 0 ; The start of a section must be aligned to FileAlignment
 text: ; 0x1000
-    ALIGN FileAlignment, db 0 ; The start of a section must be aligned to FileAlignment
-
     entry:
-        mov rcx, STD_OUTPUT_HANDLE  ; Handle (nStdHandle)
-        call [Import(GetStdHandle)] ; GetStdHandle(STD_OUTPUT_HANDLE)
+        mov rcx, STD_OUTPUT_HANDLE     ; Handle (nStdHandle)
+        call [GetIdata(GetStdHandle)]  ; GetStdHandle(STD_OUTPUT_HANDLE)
 
-        mov rcx, rax             ; Handle (hConsoleOutput)
-        lea rdx, [GetText(msg)]  ; String (lpBuffer)
-        mov r8, (msg.end-msg)/2  ; Length (nNumberOfCharsToWrite)
-        mov r9, 0                ; Unused (lpReserved)
-        call [Import(WriteConsoleW)] ; WriteConsoleW(GetStdHandle(STD_OUTPUT_HANDLE), msg, (msg.end-msg)/2, 0, 0)
+        mov rcx, rax                   ; Handle (hConsoleOutput)
+        lea rdx, [GetRdata(msg)]       ; String (lpBuffer)
+        mov r8, msg.end-msg            ; Length (nNumberOfCharsToWrite)
+        mov r9, 0                      ; Unused (lpNumberOfCharsWritten)
+        push 0                         ; Unused (lpReserved)
+        sub rsp, 32                    ; Fill remaining arguments (shadow space)
+        call [GetIdata(WriteConsoleW)] ; WriteConsoleW(GetStdHandle(STD_OUTPUT_HANDLE), msg, msg.end-msg, 0, 0)
+        add rsp, 40                    ; Free shadow space
 
-        xor rcx, rcx               ; Exit code (uExitCode)
-        call [Import(ExitProcess)] ; ExitProcess(0)
+        xor rcx, rcx                   ; Exit code (uExitCode)
+        call [GetIdata(ExitProcess)]   ; ExitProcess(0)
 
     text.uend: ; Unpadded (virtual) end of section
         ALIGN FileAlignment, db 0 ; The size of a section must be a multiple of FileAlignment
@@ -196,43 +204,42 @@ idata: ; 0x2000
         dd GetIdataRVA(ilt)                ; Import lookup table RVA
         dd 0x00000000                      ; Time date stamp
         dd 0x00000000                      ; Forwarder chain
-        dd GetIdataRVA(kernel32import.name); Name RVA
+        dd GetIdataRVA(kernel32dll)        ; Name RVA
         dd GetIdataRVA(iat)                ; Import address (thunk) table RVA
         times 20 db 0                      ; Mark the end of the import directory table (1 empty entry)
         idt.end:
 
     ilt: ; Import lookup table (original thunk)
-        dq GetIdataRVA(ExitProcessHint)    ; Import by name, hint 0x178 (ExitProcess)
-        dq GetIdataRVA(GetStdHandleHint)   ; Import by name, hint 0x2e8 (GetStdHandle)
-        dq GetIdataRVA(WriteConsoleWHint)  ; Import by name, hint 0x61b (WriteConsoleW)
-        dq 0                               ; Mark the end of the import lookup table (1 empty entry)
+        dq GetIdataRVA(ExitProcessHint)    ; Import by name (ExitProcess)
+        dq GetIdataRVA(GetStdHandleHint)   ; Import by name (GetStdHandle)
+        dq GetIdataRVA(WriteConsoleWHint)  ; Import by name (WriteConsoleW)
+        dq 0 ; Mark the end of the import lookup table (1 empty entry)
 
     iat: ; Import address (thunk) table
         ExitProcess:
-            dq GetIdataRVA(ExitProcessHint)      ; Import by name, hint 0x16c (ExitProcess)
+            dq GetIdataRVA(ExitProcessHint)      ; Import by name (ExitProcess)
         GetStdHandle:
-            dq GetIdataRVA(GetStdHandleHint)     ; Import by name, hint 0x2e8 (GetStdHandle)
+            dq GetIdataRVA(GetStdHandleHint)     ; Import by name (GetStdHandle)
         WriteConsoleW:
-            dq GetIdataRVA(WriteConsoleWHint)    ; Import by name, hint 0x61b (WriteConsoleW)
-            dq 0                                  ; Mark the end of the import address table (1 empty entry)
+            dq GetIdataRVA(WriteConsoleWHint)    ; Import by name (WriteConsoleW)
+            dq 0                                 ; Mark the end of the import address table (1 empty entry)
         iat.end:
 
     hnt: ; Hint/Name table
         ExitProcessHint:
-            dw 0x0178                ; Hint
+            dw 0                     ; Hint
             db "ExitProcess", 0      ; Name
             ALIGN 2, db 0            ; Pad
         GetStdHandleHint:
-            dw 0x02f3                ; Hint
+            dw 0                     ; Hint
             db "GetStdHandle", 0     ; Name
             ALIGN 2, db 0            ; Pad
         WriteConsoleWHint:
-            dw 0x064a                ; Hint
+            dw 0                     ; Hint
             db "WriteConsoleW", 0    ; Name
             ALIGN 2, db 0            ; Pad
 
-    kernel32import.name:
-        db "KERNEL32.dll", 0
+    kernel32dll db "KERNEL32.dll", 0
 
     idata.uend: ; Unpadded (virtual) end of section
         ALIGN FileAlignment, db 0 ; The size of a section must be a multiple of FileAlignment
@@ -242,7 +249,7 @@ rdata: ; 0x3000
     ; No need to pad the .rdata section because it is already aligned to FileAlignment by the .idata section
 
     msg:
-        db __utf16le__("Hello, world!"), 13, 0, 10, 0
+        db __utf16le__(`Hello, world!\r\n\0`)
     msg.end:
 
     rdata.uend: ; Unpadded (virtual) end of section
