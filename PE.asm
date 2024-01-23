@@ -183,7 +183,7 @@ text: ; 0x1000
 
         mov rcx, rax                   ; Handle (hConsoleOutput)
         lea rdx, [GetRdata(msg)]       ; String (lpBuffer)
-        mov r8, msg.end-msg            ; Length (nNumberOfCharsToWrite)
+        mov r8, (msg.end-msg)/2        ; Length (nNumberOfCharsToWrite)
         mov r9, 0                      ; Unused (lpNumberOfCharsWritten)
         push 0                         ; Unused (lpReserved)
         sub rsp, 32                    ; Fill remaining arguments (shadow space)
